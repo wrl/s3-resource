@@ -3,6 +3,7 @@ package s3resource
 type Source struct {
 	AccessKeyID          string `json:"access_key_id"`
 	SecretAccessKey      string `json:"secret_access_key"`
+	SessionToken         string `json:"session_token"`
 	Bucket               string `json:"bucket"`
 	Regexp               string `json:"regexp"`
 	VersionedFile        string `json:"versioned_file"`
@@ -14,6 +15,7 @@ type Source struct {
 	ServerSideEncryption string `json:"server_side_encryption"`
 	SSEKMSKeyId          string `json:"sse_kms_key_id"`
 	UseV2Signing         bool   `json:"use_v2_signing"`
+	SkipSSLVerification  bool   `json:"skip_ssl_verification"`
 }
 
 func (source Source) IsValid() (bool, string) {

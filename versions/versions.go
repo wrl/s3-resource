@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/blang/semver"
 	"github.com/concourse/s3-resource"
+	"github.com/cppforlife/go-semi-semantic/version"
 )
 
 func Match(paths []string, pattern string) ([]string, error) {
@@ -60,16 +60,7 @@ func Extract(path string, pattern string) (Extraction, bool) {
 		}
 	}
 
-	probablySemver := match
-	segs := strings.SplitN(probablySemver, ".", 3)
-	switch len(segs) {
-	case 2:
-		probablySemver += ".0"
-	case 1:
-		probablySemver += ".0.0"
-	}
-
-	version, err := semver.Parse(probablySemver)
+	ver, err := version.NewVersionFromString(match)
 	if err != nil {
 		panic("version number was not valid: " + err.Error())
 	}
@@ -89,7 +80,7 @@ func Extract(path string, pattern string) (Extraction, bool) {
 
 	extraction := Extraction{
 		Path:                path,
-		Version:             version,
+		Version:             ver,
 		CommitsSinceVersion: commitsSinceVersion,
 		VersionNumber:       match,
 	}
@@ -114,11 +105,11 @@ func (e Extractions) Len() int {
 }
 
 func (e Extractions) Less(i int, j int) bool {
-	if e[i].Version.EQ(e[j].Version) {
+	if e[i].Version.IsEq(e[j].Version) {
 		return e[i].CommitsSinceVersion < e[j].CommitsSinceVersion
 	}
 
-	return e[i].Version.LT(e[j].Version)
+	return e[i].Version.IsLt(e[j].Version)
 }
 
 func (e Extractions) Swap(i int, j int) {
@@ -129,8 +120,8 @@ type Extraction struct {
 	// path to s3 object in bucket
 	Path string
 
-	// parsed semantic version
-	Version semver.Version
+	// parsed version
+	Version version.Version
 
 	// from git-describe output
 	CommitsSinceVersion uint

@@ -15,9 +15,11 @@ func main() {
 	awsConfig := s3resource.NewAwsConfig(
 		request.Source.AccessKeyID,
 		request.Source.SecretAccessKey,
+		request.Source.SessionToken,
 		request.Source.RegionName,
 		request.Source.Endpoint,
 		request.Source.DisableSSL,
+		request.Source.SkipSSLVerification,
 	)
 
 	client := s3resource.NewS3Client(

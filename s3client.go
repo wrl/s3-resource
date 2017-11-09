@@ -1,11 +1,15 @@
 package s3resource
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
+
+	"net/http"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -21,7 +25,7 @@ type S3Client interface {
 	BucketFiles(bucketName string, prefixHint string) ([]string, error)
 	BucketFileVersions(bucketName string, remotePath string) ([]string, error)
 
-	UploadFile(bucketName string, remotePath string, localPath string, acl string, serverSideEncryption string, kmsKeyId string) (string, error)
+	UploadFile(bucketName string, remotePath string, localPath string, options UploadFileOptions) (string, error)
 	DownloadFile(bucketName string, remotePath string, versionID string, localPath string) error
 
 	DeleteFile(bucketName string, remotePath string) error
@@ -39,6 +43,19 @@ type s3client struct {
 	session *session.Session
 
 	progressOutput io.Writer
+}
+
+type UploadFileOptions struct {
+	Acl                  string
+	ServerSideEncryption string
+	KmsKeyId             string
+	ContentType          string
+}
+
+func NewUploadFileOptions() UploadFileOptions {
+	return UploadFileOptions{
+		Acl: "private",
+	}
 }
 
 func NewS3Client(
@@ -64,20 +81,31 @@ func NewS3Client(
 func NewAwsConfig(
 	accessKey string,
 	secretKey string,
+	sessionToken string,
 	regionName string,
 	endpoint string,
 	disableSSL bool,
+	skipSSLVerification bool,
 ) *aws.Config {
 	var creds *credentials.Credentials
 
 	if accessKey == "" && secretKey == "" {
 		creds = credentials.AnonymousCredentials
 	} else {
-		creds = credentials.NewStaticCredentials(accessKey, secretKey, "")
+		creds = credentials.NewStaticCredentials(accessKey, secretKey, sessionToken)
 	}
 
 	if len(regionName) == 0 {
 		regionName = "us-east-1"
+	}
+
+	var httpClient *http.Client
+	if skipSSLVerification {
+		httpClient = &http.Client{Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}}
+	} else {
+		httpClient = http.DefaultClient
 	}
 
 	awsConfig := &aws.Config{
@@ -86,6 +114,7 @@ func NewAwsConfig(
 		S3ForcePathStyle: aws.Bool(true),
 		MaxRetries:       aws.Int(maxRetries),
 		DisableSSL:       aws.Bool(disableSSL),
+		HTTPClient:       httpClient,
 	}
 
 	if len(endpoint) != 0 {
@@ -136,8 +165,13 @@ func (client *s3client) BucketFileVersions(bucketName string, remotePath string)
 	return versions, nil
 }
 
-func (client *s3client) UploadFile(bucketName string, remotePath string, localPath string, acl string, serverSideEncryption string, kmsKeyId string) (string, error) {
-	uploader := s3manager.NewUploader(client.session)
+func (client *s3client) UploadFile(bucketName string, remotePath string, localPath string, options UploadFileOptions) (string, error) {
+	uploader := s3manager.NewUploaderWithClient(client.client)
+
+	if client.isGCSHost() {
+		// GCS returns `InvalidArgument` on multipart uploads
+		uploader.MaxUploadParts = 1
+	}
 
 	stat, err := os.Stat(localPath)
 	if err != nil {
@@ -159,14 +193,17 @@ func (client *s3client) UploadFile(bucketName string, remotePath string, localPa
 	uploadInput := s3manager.UploadInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(remotePath),
-		Body:   progressSeekReaderAt{localFile, progress},
-		ACL:    aws.String(acl),
+		Body:   progressReader{localFile, progress},
+		ACL:    aws.String(options.Acl),
 	}
-	if serverSideEncryption != "" {
-		uploadInput.ServerSideEncryption = aws.String(serverSideEncryption)
+	if options.ServerSideEncryption != "" {
+		uploadInput.ServerSideEncryption = aws.String(options.ServerSideEncryption)
 	}
-	if kmsKeyId != "" {
-		uploadInput.SSEKMSKeyId = aws.String(kmsKeyId)
+	if options.KmsKeyId != "" {
+		uploadInput.SSEKMSKeyId = aws.String(options.KmsKeyId)
+	}
+	if options.ContentType != "" {
+		uploadInput.ContentType = aws.String(options.ContentType)
 	}
 
 	uploadOutput, err := uploader.Upload(&uploadInput)
@@ -198,7 +235,7 @@ func (client *s3client) DownloadFile(bucketName string, remotePath string, versi
 
 	progress := client.newProgressBar(*object.ContentLength)
 
-	downloader := s3manager.NewDownloader(client.session)
+	downloader := s3manager.NewDownloaderWithClient(client.client)
 
 	localFile, err := os.Create(localPath)
 	if err != nil {
@@ -394,4 +431,8 @@ func (client *s3client) newProgressBar(total int64) *pb.ProgressBar {
 	progress.NotPrint = true
 
 	return progress.SetWidth(80)
+}
+
+func (client *s3client) isGCSHost() bool {
+	return (client.session.Config.Endpoint != nil && strings.Contains(*client.session.Config.Endpoint, "storage.googleapis.com"))
 }
